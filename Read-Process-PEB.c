@@ -2,7 +2,7 @@
 #include <winternl.h>
 #include <stdio.h>
 
-// Define the prototype of NtQueryInformationProcess
+// Define the prototype of NtQueryInformationProcess as it's not available in the standard headers
 typedef NTSTATUS(NTAPI* pfnNtQueryInformationProcess)(
     HANDLE ProcessHandle,
     PROCESSINFOCLASS ProcessInformationClass,
@@ -38,9 +38,9 @@ int main(int argc, char* argv[]) {
     }
 
     // Dynamically load NtQueryInformationProcess from ntdll.dll
-    HMODULE hNtdll = LoadLibraryA("ntdll.dll");
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
     if (hNtdll == NULL) {
-        printf("Failed to load ntdll.dll\n");
+        printf("Failed to get a handle on ntdll.dll\n");
         CloseHandle(hProcess);
         return 1;
     }
