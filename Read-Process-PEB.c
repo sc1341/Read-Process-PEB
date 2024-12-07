@@ -1,4 +1,5 @@
 #include <Windows.h>
+#include <TlHelp32.h>
 #include <winternl.h>
 #include <stdio.h>
 
@@ -24,73 +25,77 @@ BOOL ReadRemoteUnicodeString(HANDLE hProcess, UNICODE_STRING* source, WCHAR* des
     return TRUE;
 }
 
-int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        printf("Usage: %s <PID>\n", argv[0]);
-        return 1;
-    }
-
-    DWORD pid = (DWORD)atoi(argv[1]);
+void DumpProcessArguments(DWORD pid, pfnNtQueryInformationProcess NtQueryInformationProcess) {
     HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (hProcess == NULL) {
-        printf("Failed to open process with PID %d\n", pid);
-        return 1;
-    }
-
-    // Dynamically load NtQueryInformationProcess from ntdll.dll
-    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
-    if (hNtdll == NULL) {
-        printf("Failed to get a handle on ntdll.dll\n");
-        CloseHandle(hProcess);
-        return 1;
-    }
-
-    pfnNtQueryInformationProcess NtQueryInformationProcess = (pfnNtQueryInformationProcess)GetProcAddress(hNtdll, "NtQueryInformationProcess");
-    if (NtQueryInformationProcess == NULL) {
-        printf("Failed to get NtQueryInformationProcess address\n");
-        FreeLibrary(hNtdll);
-        CloseHandle(hProcess);
-        return 1;
+        // Skip processes we cannot access
+        return;
     }
 
     PROCESS_BASIC_INFORMATION pbi;
     ULONG returnLength;
     NTSTATUS status = NtQueryInformationProcess(hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), &returnLength);
     if (!NT_SUCCESS(status)) {
-        printf("NtQueryInformationProcess failed\n");
-        FreeLibrary(hNtdll);
         CloseHandle(hProcess);
-        return 1;
+        return;
     }
 
     PEB peb;
     if (!ReadProcessMemory(hProcess, pbi.PebBaseAddress, &peb, sizeof(peb), NULL)) {
-        printf("Failed to read PEB\n");
-        FreeLibrary(hNtdll);
         CloseHandle(hProcess);
-        return 1;
+        return;
     }
 
     RTL_USER_PROCESS_PARAMETERS params;
     if (!ReadProcessMemory(hProcess, peb.ProcessParameters, &params, sizeof(params), NULL)) {
-        printf("Failed to read process parameters\n");
-        FreeLibrary(hNtdll);
         CloseHandle(hProcess);
-        return 1;
+        return;
     }
 
     WCHAR imagePath[MAX_PATH] = { 0 };
     WCHAR commandLine[MAX_PATH] = { 0 };
     if (ReadRemoteUnicodeString(hProcess, &params.ImagePathName, imagePath, sizeof(imagePath)) &&
         ReadRemoteUnicodeString(hProcess, &params.CommandLine, commandLine, sizeof(commandLine))) {
+        wprintf(L"PID: %lu\n", pid);
         wprintf(L"Image Path: %s\n", imagePath);
-        wprintf(L"Command Line: %s\n", commandLine);
-    }
-    else {
-        printf("Failed to read string from process\n");
+        wprintf(L"Command Line: %s\n\n", commandLine);
     }
 
-    FreeLibrary(hNtdll);
     CloseHandle(hProcess);
+}
+
+int main() {
+    // Dynamically load NtQueryInformationProcess from ntdll.dll
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (hNtdll == NULL) {
+        printf("Failed to get a handle on ntdll.dll\n");
+        return 1;
+    }
+
+    pfnNtQueryInformationProcess NtQueryInformationProcess = (pfnNtQueryInformationProcess)GetProcAddress(hNtdll, "NtQueryInformationProcess");
+    if (NtQueryInformationProcess == NULL) {
+        printf("Failed to get NtQueryInformationProcess address\n");
+        return 1;
+    }
+
+    // Enumerate all processes using CreateToolhelp32Snapshot
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        printf("Failed to create process snapshot\n");
+        return 1;
+    }
+
+    PROCESSENTRY32 pe32;
+    pe32.dwSize = sizeof(PROCESSENTRY32);
+
+    if (Process32First(hSnapshot, &pe32)) {
+        do {
+            DumpProcessArguments(pe32.th32ProcessID, NtQueryInformationProcess);
+        } while (Process32Next(hSnapshot, &pe32));
+    } else {
+        printf("Failed to enumerate processes\n");
+    }
+
+    CloseHandle(hSnapshot);
     return 0;
 }
